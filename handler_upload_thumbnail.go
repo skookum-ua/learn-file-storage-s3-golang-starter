@@ -3,9 +3,13 @@ package main
 import (
 	"fmt"
 	"io"
+
 	"mime"
 	"net/http"
-	"encoding/base64"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -47,29 +51,44 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		http.Error(w, "Invalid Content-Type header", http.StatusBadRequest)
+		respondWithError(w, http.StatusBadRequest, "Invalid Content-Type header", err)
 		return
 	}
 
-	byteFile, err := io.ReadAll(file)
-	if err != nil {
-		http.Error(w, "Failed to read file data", http.StatusInternalServerError)
+	if !slices.Contains([]string{"image/jpeg", "image/png"}, mediaType) {
+		respondWithError(w, http.StatusBadRequest, "Not allowed file extension", nil)
+		return
+	}
+
+	var fileExtention string
+	if len(strings.Split(mediaType, "/")) == 2 {
+		fileExtention = strings.Split(mediaType, "/")[1]
+	} else {
+		respondWithError(w, http.StatusBadRequest, "Not allowed file extension?", nil)
 		return
 	}
 
 	video, err := cfg.db.GetVideo(videoID)
 	if err != nil {
-		http.Error(w, "Internal databaseerror", http.StatusInternalServerError)
+		respondWithError(w, http.StatusInternalServerError, "Internal databaseerror", err)
 		return
 	}
 
 	if video.UserID != userID {
-		http.Error(w, "User iws not video owner", http.StatusUnauthorized)
+		respondWithError(w, http.StatusUnauthorized, "User iws not video owner", nil)
 		return
 	}
 
-	encodedTumbnailData:= base64.StdEncoding.EncodeToString(byteFile)
-	dataUrl:= fmt.Sprintf("data:%s;base64,%s", mediaType, encodedTumbnailData)
+	filePath := filepath.Join(cfg.assetsRoot, videoIDString+"."+fileExtention)
+
+	tumbnailFile, err := os.Create(filePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to read file data", err)
+		return
+	}
+	io.Copy(tumbnailFile, file)
+
+	dataUrl := fmt.Sprintf("http://localhost:%s/assets/%s.%s", cfg.port, videoID, fileExtention)
 
 	video.ThumbnailURL = &dataUrl
 

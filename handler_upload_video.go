@@ -11,9 +11,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
-	"path/filepath"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -101,7 +101,17 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	f.Seek(0, io.SeekStart)
+	processedPath, err := processVideoForFastStart(f.Name())
+
+	newFile, err:= os.Open(processedPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Culdn`t create temp file", err)
+		return
+	}
+
+	defer newFile.Close()
+
+	newFile.Seek(0, io.SeekStart)
 
 	key := fmt.Sprintf("%s.%s", randByteString, fileExtention)
 	key = filepath.Join(aspectRatio, key)
@@ -109,7 +119,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	input := &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(key),
-		Body:        f,
+		Body:        newFile,
 		ContentType: aws.String(mediaType),
 	}
 
@@ -120,6 +130,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	dataUrl := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, key)
+	
 
 	video.VideoURL = &dataUrl
 
@@ -130,10 +141,10 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 func getVideoAspectRatio(filePath string) (string, error) {
 	command := exec.Command(
-		"ffprobe", 
-		"-v", "error", 
-		"-print_format", "json", 
-		"-show_streams", 
+		"ffprobe",
+		"-v", "error",
+		"-print_format", "json",
+		"-show_streams",
 		filePath,
 	)
 	var buf bytes.Buffer
@@ -166,4 +177,24 @@ func getVideoAspectRatio(filePath string) (string, error) {
 		return "portrait", nil
 	}
 	return "other", nil
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	outputPath := filePath + ".processing"
+	command := exec.Command(
+		"ffmpeg",
+		"-i", filePath,
+		"-c", "copy",
+		"-movflags", "+faststart",
+		"-f", "mp4",
+		outputPath,
+	)
+
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return "", fmt.Errorf("ffmpeg failed: %w: %s", err, stderr.String())
+	}
+
+	return outputPath, nil
 }
